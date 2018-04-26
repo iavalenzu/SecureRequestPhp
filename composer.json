@@ -1,0 +1,27 @@
+{
+    "name": "ivalenzu/secure-request-php",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Ismael Valenzuela",
+            "email": "iavalenzu@gmail.com"
+        }
+    ],
+    "require": {
+        "gamegos/jws": "~1.0",
+        "guzzlehttp/guzzle": "^6.3"
+    },
+    
+    "autoload": {
+        "psr-4": {
+            "SecureRequestPhp\\": ["src", "test"]
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^7.1"
+    },
+    
+    "scripts": {
+        "test" : "vendor/bin/phpunit test/SecureRequestPhpTest"
+    }
+}
