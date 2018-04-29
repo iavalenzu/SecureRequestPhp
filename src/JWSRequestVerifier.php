@@ -1,81 +1,83 @@
 <?php
 
-
 namespace SecureRequestPhp;
 
-require __DIR__ . '/../vendor/autoload.php';
+
+use SecureRequestPhp\JWSVerifiableRequestInterface;
+use SecureRequestPhp\Middlewares\JWSMiddlewareRequestInterface;
+
+use SecureRequestPhp\Middlewares\CheckTimestampMiddleware;
+use SecureRequestPhp\Middlewares\CheckBodyHashMiddleware;
+use SecureRequestPhp\Middlewares\CheckQueryHashMiddleware;
+use SecureRequestPhp\JWSDecodedToken;
 
 class JWSRequestVerifier 
 {
-    static public function hashSHA256($data = "")
-    {
-        return hash('sha256', $data);
-    }      
+    private $middlewares;
     
-    static public function isTimestampValid($timestamp, $delta)
+     
+    public function __construct() 
     {
-        if(!$timestamp){
-            throw new \Exception("No esta definido el timestamp");
-        }
-
-        if(!$delta){
-            throw new \Exception("No esta definido el delta de tiempo del timestamp");
-        }
-
-        return (intval(timestamp) - intval(microtime(true) * 1000)) < delta;
-    }
-    
-    static public function isBodyHashCorrect($bodyHash, $bodyString)
-    {
-        if(!$bodyHash){
-            throw new \Exception("No esta definido el bodyHash");
-        }
-
-        if(!$bodyString){
-            throw new \Exception("No esta definido el rawBody");
-        }
-
-        return $bodyHash === JWSRequestVerifier::hashSHA256($bodyString);
-    }
-
-    static public function isQueryHashCorrect($queryHash, $queryString)
-    {
-        if(!$queryHash){
-            throw new \Exception("No esta definido el queryHash");
-        }    
-
-        if(!$queryString){
-            throw new \Exception("No esta definido el queryString");
-        }
-
-        return $queryHash === JWSRequestVerifier::hashSHA256($queryString);
-    }    
-    
-    
-    static public function verify($request = [], $options = [])
-    {
+        $this->middlewares = array();
         
-        if(!$options['clientPublicKeyFn']){
-            throw new \Exception("No esta definida la promesa que obtiene al llave publica del cliente");
-        }    
+        $this->middlewares['CheckTimestampMiddleware'] = new CheckTimestampMiddleware(20 * 60 * 1000);
+        $this->middlewares['CheckBodyHashMiddleware'] = new CheckBodyHashMiddleware();
+        $this->middlewares['CheckQueryHashMiddleware'] = new CheckQueryHashMiddleware();
+        
+        
+    }
     
-        $clientPublicKeyFunction = $options['clientPublicKeyFn'];    
+    public function addMiddleware(JWSMiddlewareRequestInterface $middleware, $name)
+    {
+        $this->middlewares[$name] = $middleware;
+    }
     
-        if(!$request['headers']['authorization']){
+    /****************************************************************
+     * Se verifica que el algoritmo de firma este definido
+     * https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
+     ****************************************************************/
+
+    private function passSecurityCheck(JWSDecodedToken $decodedToken)
+    {
+        $typHeader = $decodedToken->getHeader('typ');
+        
+        if($typHeader !== "JWT"){
+            throw new \Exception("El tipo de token no es JWT");
+        }
+
+        $algHeader = $decodedToken->getHeader('alg');
+        
+        if($algHeader !== "RS256"){
+            throw new \Exception("El algoritmo de firma no es RS256");
+        }
+
+        return true;
+    }    
+
+    private function checkMiddlewares(JWSDecodedToken $decodedToken, JWSVerifiableRequestInterface $request)
+    {
+        foreach ($this->middlewares as $name => $middleware)
+        {
+            if(!$middleware->check($decodedToken, $request)){
+                throw new \Exception("Ocurrio un error");
+            }
+        }
+    }
+    
+    public function verify(JWSVerifiableRequestInterface $request)
+    {
+        $authorizationHeader = $request->getAuthorizationHeader();
+    
+        if(!$authorizationHeader){
             throw new \Exception("El header de authorizacion no esta definido");
         }
 
-        if(!$request['query']){
-            throw new \Exception("La query no esta definida");
-        }
+        
+        //*************************************
+        // Se verifica el header de authorizacion
+        //*************************************        
 
-        if(!$request['body']){
-            throw new \Exception("El body no esta definido");
-        }
-
-        $authorization = $request['headers']['authorization'];
-
-        $parts = explode(" ", $authorization);
+        $parts = explode(" ", $authorizationHeader);
        
         if(count($parts) > 2){
             throw new \Exception("El formato del header de autorizacion no es correcto");
@@ -90,8 +92,7 @@ class JWSRequestVerifier
         }
     
         //Se obtiene el token
-
-        $token = $parts[1];        
+        $token = $parts[1];
         
         $jws = new \Gamegos\JWS\JWS();
         
@@ -100,72 +101,65 @@ class JWSRequestVerifier
         if(!$decoded){
             throw new \Exception("La firma no es valida");
         }
+        
+        $decodedToken = new JWSDecodedToken($decoded);
+        
+        
+        //*************************************
+        // Chequeo de seguridad
+        //*************************************
+
+        if(!JWSRequestVerifier::passSecurityCheck($decodedToken)){
+            throw new \Exception("Ocurrio un error de seguridad");
+        }          
+        
+        //*************************************
+        // Se verifica que los parametros vengan definidos 
+        //*************************************
     
         //Se verifica que el client id este incluido
-        if(!isset($decoded['headers']['kid'])){
+        if(!$decodedToken->existsHeader('kid')){
             throw new \Exception("No esta definido el id de cliente");
         }
-        $client_id = $decoded['headers']['kid'];
 
         //Se verifica que el nonce este incluido    
-        if(!isset($decoded['payload']['nc'])){
+        if(!$decodedToken->existsPayload('nc')){
             throw new \Exception("No esta definido el nonce");
-        }
-        $nonce = $decoded['payload']['nc'];
+        } 
 
         //Se obtienen el timestamp del payload 
-        if(!isset($decoded['payload']['ts'])){
+        if(!$decodedToken->existsPayload('ts')){ 
             throw new \Exception("No esta definido el timestamp");
         }
-        $timestamp = $decoded['payload']['ts'];
 
         //Se obtienen el body hash del payload 
-        if(!isset($decoded['payload']['bh'])){
+        if(!$decodedToken->existsPayload('bh')){
             throw new \Exception("No esta definido el hash del body");
         }
-        $bodyHash = $decoded['payload']['bh'];
 
         //Se obtienen el query hash del payload 
-        if(!isset($decoded['payload']['qh'])){
+        if(!$decodedToken->existsPayload('qh')){ 
             throw new \Exception("No esta definido el hash del query");
         }
-        $queryHash = $decoded['payload']['qh'];    
-        
         
         //*************************************
-        // Se verifica la antiguedad del request
+        // Se evaluan los middlewares
         //*************************************
-
-        if(!JWSRequestVerifier::isTimestampValid($timestamp, 20 * 60 * 1000)){
-            throw new \Exception("Se excedio el tiempo maximo");
-        }
+        
+        $this->checkMiddlewares($decodedToken, $request);
+        
 
         //*************************************
-        // Se verifica que coincidan los hashes
+        // Se obtiene la llave public del cliente segun su client id
         //*************************************
-
-        if(!JWSRequestVerifier::isBodyHashCorrect($bodyHash, $request['body'])){
-            throw new \Exception("El hash del body no coincide");
-        }
-    
-        if(!JWSRequestVerifier::isQueryHashCorrect($queryHash, $request['query'])){
-            throw new \Exception("El hash de la query no coincide");
-        }
         
+        $client_id = $decodedToken->getHeader('kid');
         
-        $clientPublicKey = $clientPublicKeyFunction($client_id);
+        $clientPublicKey = $request->getPublicKey($client_id);
         
         if(!isset($clientPublicKey)){
             throw new \Exception("La llave publica no esta definida");
         }
-        
-        print_r($clientPublicKey);
-        
-        //$clientPublicKey = str_replace("\n", "", $clientPublicKey);
-        
-        //print_r($clientPublicKey);
-        
-        //$pubkeyid = openssl_get_publickey($clientPublicKey);
         
         return $jws->verify($token, $clientPublicKey);
 
